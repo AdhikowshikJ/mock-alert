@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: atlas-vendor-mock
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: PUBLIC_BASE_URL
+        sync: false
