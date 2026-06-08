@@ -20,9 +20,45 @@ The mock is purely a **vendor stand-in**. It doesn't execute Atlas templates, do
 | `/bastion` | 6 | Session-login (cookie) + offset/count pagination |
 | `/pulse` | 7 | Rate limit 5 req/min → 429 with `Retry-After` |
 | `/helix` | 8 | Cursor-paginated alerts + flaky enrichment (assets ending `00` → 404) |
+| `/sentinelshield` | wb A | Writeback — static `X-Api-Key` + single `PATCH` close |
+| `/nimbusguard` | wb B | Writeback — OAuth2 client_credentials + `PATCH` close |
+| `/threatnexus` | wb C | Writeback — `ApiToken` + multi-step (close incident, then add note) |
+| `/lumen` | wb D | Writeback — OAuth2 + single GraphQL mutation |
 | `/ccs/v4/secret/:name` | all | CCS v4 secret stub (per-integration-name canned blob) |
 | `/_debug/requests` | — | Ring buffer of recent inbound requests (for verification) |
 | `/_debug/clear` | — | POST to clear the request log |
+| `/_debug/writebacks` | — | Ledger of accepted writebacks (for verification) |
+| `/_debug/clear-writebacks` | — | POST to clear the writeback ledger |
+
+### Writeback endpoints (close-alert / response-action targets)
+
+These back the **write-backs** skill — the close/update calls a generated vendor handler makes.
+Each covers one auth/flow archetype. Credentials come from CCS v4 (`/ccs/v4/secret/<NAME>`):
+integration names `SENTINELSHIELD_EDR`, `NIMBUSGUARD_CLOUD`, `THREATNEXUS_XDR`, `LUMEN_CNAPP`.
+
+| Archetype | Vendor | Auth | Endpoint(s) |
+|---|---|---|---|
+| **A** static key, single call | sentinelshield | `X-Api-Key` | `PATCH /sentinelshield/api/v2/detections/resolve` |
+| **B** OAuth2, single call | nimbusguard | Bearer (after token) | `POST /nimbusguard/oauth2/token`, `PATCH /nimbusguard/v1/findings/:id` |
+| **C** multi-step | threatnexus | `ApiToken` | `POST /threatnexus/web/api/v2.1/incidents/resolve`, `POST /threatnexus/web/api/v2.1/incidents/:id/notes` |
+| **D** GraphQL | lumen | Bearer (after token) | `POST /lumen/oauth2/token`, `POST /lumen/graphql` |
+
+```bash
+# A — static API key
+curl -X PATCH http://localhost:3000/sentinelshield/api/v2/detections/resolve \
+  -H "X-Api-Key: k" -H "Content-Type: application/json" \
+  -d '{"detection_ids":["det-1"],"resolution":"benign","note":"closed by atlas"}'
+
+# B — OAuth then close
+TOK=$(curl -s -X POST http://localhost:3000/nimbusguard/oauth2/token \
+  -d "grant_type=client_credentials&client_id=c&client_secret=s" | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+curl -X PATCH http://localhost:3000/nimbusguard/v1/findings/find-9 \
+  -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
+  -d '{"state":"resolved","classification":"false_positive","determination":"benign"}'
+
+# verify what was written back
+curl http://localhost:3000/_debug/writebacks
+```
 
 ## Local dev
 
