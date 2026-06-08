@@ -24,11 +24,44 @@ The mock is purely a **vendor stand-in**. It doesn't execute Atlas templates, do
 | `/nimbusguard` | wb B | Writeback — OAuth2 client_credentials + `PATCH` close |
 | `/threatnexus` | wb C | Writeback — `ApiToken` + multi-step (close incident, then add note) |
 | `/lumen` | wb D | Writeback — OAuth2 + single GraphQL mutation |
+| `/falcon` | unified | OAuth2 (shared token) · cursor pull + single-call close |
+| `/sentryx` | unified | ApiToken · offset pull + multi-step close+note |
+| `/skylux` | unified | OAuth2 · one GraphQL endpoint (query=pull, mutation=writeback) |
+| `/ironclad` | unified | X-Api-Key · has_more pull + close (404 / idempotent edges) |
+| `/warden` | unified | session cookie · offset pull + cookie-auth close (401 edge) |
+| `/rampart` | unified | Bearer · single pull + close, rate-limited 5/min on both (429) |
 | `/ccs/v4/secret/:name` | all | CCS v4 secret stub (per-integration-name canned blob) |
 | `/_debug/requests` | — | Ring buffer of recent inbound requests (for verification) |
 | `/_debug/clear` | — | POST to clear the request log |
 | `/_debug/writebacks` | — | Ledger of accepted writebacks (for verification) |
 | `/_debug/clear-writebacks` | — | POST to clear the writeback ledger |
+| `/_debug/alerts/:vendor` | — | Current alert store for a unified vendor (proves the round-trip) |
+| `/_debug/reseed` | — | POST to reset all unified-vendor alert stores |
+
+### Unified vendors (one vendor does BOTH pull and writeback)
+
+Real vendors pull alerts **and** accept writebacks on the same alert. These six expose both
+directions over a **single CCS secret and a shared in-memory alert store**, so the id you pull is
+the id you close — and `/_debug/alerts/:vendor` (or a re-pull) shows the status flip. This is the
+thing the split pull-only / writeback-only vendors can't prove: the **id round-trip**.
+
+| Vendor | Integration name | Auth | Pull | Writeback | Edges exercised |
+|---|---|---|---|---|---|
+| falcon | `FALCON` | OAuth2 (token shared by both) | cursor | `PATCH /falcon/alerts` (composite_ids) | token reuse; id round-trip |
+| sentryx | `SENTRYX` | ApiToken | offset | `POST .../threats/resolve` + `.../:id/notes` | multi-step; account_id from secret; best-effort note |
+| skylux | `SKYLUX` | OAuth2 | GraphQL `query` | GraphQL `mutation` (same endpoint) | one endpoint both ways |
+| ironclad | `IRONCLAD` | X-Api-Key | has_more | `PATCH .../detections/:id` | close unknown id → 404; re-close → idempotent no-op |
+| warden | `WARDEN` | session cookie | offset | `POST .../events/:id/close` | cookie reused for writeback; missing cookie → 401 |
+| rampart | `RAMPART` | Bearer static | single | `PATCH .../detections/:id` | rate limit 5/min applies to writeback too → 429 Retry-After |
+
+```bash
+# falcon round-trip: pull an id, close it, see the status flip
+TOK=$(curl -s -X POST $BASE/falcon/oauth2/token -d 'grant_type=client_credentials&client_id=c&client_secret=s' | jq -r .access_token)
+curl -s $BASE/falcon/alerts -H "Authorization: Bearer $TOK"            # pull → composite_id
+curl -s -X PATCH $BASE/falcon/alerts -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' -d '{"composite_ids":["falcon:0001:det"],"action":"resolve"}'
+curl -s $BASE/_debug/alerts/falcon                                     # → that alert is now "closed"
+```
 
 ### Writeback endpoints (close-alert / response-action targets)
 
