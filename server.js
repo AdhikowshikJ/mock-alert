@@ -1,6 +1,7 @@
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const { requestLogger, getRecentRequests, clearRequests } = require('./lib/requestLog');
+const { getWritebacks, clearWritebacks } = require('./lib/state');
 
 const app = express();
 
@@ -23,9 +24,15 @@ app.get('/', (req, res) => {
       '/bastion':        'brief 6 — session login (cookie) + offset/count',
       '/pulse':          'brief 7 — rate limit (5/min) → 429 Retry-After',
       '/helix':          'brief 8 — optional sidecar (asset IDs ending 00 → 404)',
+      '/sentinelshield': 'writeback A — static X-Api-Key + single PATCH close',
+      '/nimbusguard':    'writeback B — OAuth2 client_credentials + PATCH close',
+      '/threatnexus':    'writeback C — ApiToken + multi-step close incident + add note',
+      '/lumen':          'writeback D — OAuth2 + single GraphQL mutation',
       '/ccs/v4/secret/:name': 'CCS v4 mock — canned secret blob per integration name',
       '/_debug/requests':     'GET: ring buffer of recent requests (for verification)',
-      '/_debug/clear':        'POST: clear the request log buffer'
+      '/_debug/clear':        'POST: clear the request log buffer',
+      '/_debug/writebacks':   'GET: ledger of accepted writebacks (for verification)',
+      '/_debug/clear-writebacks': 'POST: clear the writeback ledger'
     }
   });
 });
@@ -41,6 +48,12 @@ app.use('/pulse',          require('./routes/rateLimitRetry'));
 app.use('/helix',          require('./routes/sidecarOptional'));
 app.use('/ccs',            require('./routes/ccs'));
 
+// Writeback (close-alert / response-action) vendor routes — all archetypes
+app.use('/sentinelshield', require('./routes/wbStaticApiKey'));  // A: static API key
+app.use('/nimbusguard',    require('./routes/wbOauth'));         // B: OAuth2 + single call
+app.use('/threatnexus',    require('./routes/wbMultiStep'));     // C: ApiToken + close + note
+app.use('/lumen',          require('./routes/wbGraphql'));       // D: OAuth2 + GraphQL
+
 // Request log inspection — for verifying what Atlas sent
 app.get('/_debug/requests', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
@@ -49,6 +62,17 @@ app.get('/_debug/requests', (req, res) => {
 
 app.post('/_debug/clear', (req, res) => {
   clearRequests();
+  res.json({ cleared: true });
+});
+
+// Writeback ledger inspection — for verifying what Atlas wrote back
+app.get('/_debug/writebacks', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
+  res.json(getWritebacks(limit));
+});
+
+app.post('/_debug/clear-writebacks', (req, res) => {
+  clearWritebacks();
   res.json({ cleared: true });
 });
 
